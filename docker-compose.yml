@@ -1,0 +1,122 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: erp_postgres
+    environment:
+      POSTGRES_USER: erp_user
+      POSTGRES_PASSWORD: erp_password
+      POSTGRES_DB: erp_university
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database_dumps:/database_dumps
+    ports:
+      - "5432:5432"
+    networks:
+      - erp_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U erp_user -d erp_university"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: erp_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - erp_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Django Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: erp_backend
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ./backend:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=True
+      - DATABASE_NAME=erp_university
+      - DATABASE_USER=erp_user
+      - DATABASE_PASSWORD=erp_password
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - erp_network
+
+  # Celery Worker
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: erp_celery_worker
+    command: celery -A config worker -l info
+    volumes:
+      - ./backend:/app
+    environment:
+      - DATABASE_NAME=erp_university
+      - DATABASE_USER=erp_user
+      - DATABASE_PASSWORD=erp_password
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - erp_network
+
+  # Celery Beat (Scheduler)
+  celery_beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: erp_celery_beat
+    command: celery -A config beat -l info
+    volumes:
+      - ./backend:/app
+    environment:
+      - DATABASE_NAME=erp_university
+      - DATABASE_USER=erp_user
+      - DATABASE_PASSWORD=erp_password
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - erp_network
+
+volumes:
+  postgres_data:
+  static_volume:
+  media_volume:
+
+networks:
+  erp_network:
+    driver: bridge
